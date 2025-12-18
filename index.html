@@ -3,12 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>BAT-OS V5 | COMMAND CENTER</title>
+    <title>BAT-OS | STEALTH STEREO</title>
+    <link rel="icon" href="data:;base64,iVBORw0KGgo=">
     <style>
         :root { --glow: #ff3c00; --bg: #000; }
         body { margin: 0; overflow: hidden; background: var(--bg); font-family: 'Courier New', monospace; color: var(--glow); user-select: none; }
         
-        #intro { position: fixed; inset: 0; z-index: 1000; cursor: pointer; display: flex; justify-content: center; align-items: center; }
+        /* Intro/Auth Layer */
+        #intro { position: fixed; inset: 0; z-index: 1000; cursor: pointer; display: flex; justify-content: center; align-items: center; background: #000; }
         .door { position: absolute; top: 0; height: 100%; width: 50.5%; background: #050505; border: 1px solid #111; transition: transform 2s cubic-bezier(0.8, 0, 0.2, 1); z-index: 1001; }
         #left-door { left: 0; } #right-door { right: 0; }
         .open #left-door { transform: translateX(-100%); }
@@ -30,13 +32,13 @@
     <div id="right-door" class="door"></div>
     <div id="scan-box">
         <div id="laser"></div>
-        <p style="margin-top:280px; font-weight: bold; letter-spacing: 5px;" id="auth-status">LINKING SATELLITE...</p>
+        <p style="margin-top:280px; font-weight: bold; letter-spacing: 5px;" id="auth-status">IDENTIFYING...</p>
     </div>
-    <div id="tap-msg" style="z-index:1003; font-size: 18px; border: 1px solid var(--glow); padding: 10px 20px;">INITIATE COMMAND</div>
+    <div id="tap-msg" style="z-index:1003; font-size: 18px; border: 1px solid var(--glow); padding: 10px 20px;">[ INITIATE BOOT ]</div>
 </div>
 
 <div id="hud">
-    <div style="position:absolute; top:20px; left:30px; font-size:12px;">ENCRYPTED AUDIO LINK: ESTABLISHED</div>
+    <div style="position:absolute; top:20px; left:30px; font-size:12px;">ENCRYPTED LINK: 256-BIT</div>
 </div>
 
 <canvas id="screenContent" width="512" height="512"></canvas>
@@ -48,63 +50,81 @@
 <script type="module">
     import * as THREE from 'three';
 
-    // --- SPOTIFY CORE ---
+    // --- SPOTIFY CONFIG ---
     const CLIENT_ID = '2a31097ec0e64dc99ba46002bac64623';
-    const REDIRECT_URI = window.location.origin + window.location.pathname;
+    const REDIRECT_URI = 'https://belisario-afk.github.io/Bat-OS/'; 
     const SCOPES = 'user-read-currently-playing user-modify-playback-state';
 
     let spotifyToken = null;
-    let currentTrack = "SYSTEM STANDBY";
-    let currentArtist = "SCANNING FOR MEDIA";
+    let currentTrack = "IDLE";
+    let currentArtist = "SCANNING...";
+    let batteryLevel = "100%";
 
-    // --- AUTH & API CALLS ---
+    // --- BATTERY LOGIC ---
+    if (navigator.getBattery) {
+        navigator.getBattery().then(batt => {
+            const updateBatt = () => { batteryLevel = Math.floor(batt.level * 100) + "%"; };
+            updateBatt();
+            batt.addEventListener('levelchange', updateBatt);
+        });
+    }
+
+    // --- AUTH LOGIC ---
     function login() {
-        const url = `https://accounts.spotify.com/authorize?client_id=${CLIENT_ID}&response_type=token&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&scope=${encodeURIComponent(SCOPES)}`;
+        let url = 'https://accounts.spotify.com/authorize';
+        url += '?response_type=token';
+        url += '&client_id=' + encodeURIComponent(CLIENT_ID.trim());
+        url += '&scope=' + encodeURIComponent(SCOPES);
+        url += '&redirect_uri=' + encodeURIComponent(REDIRECT_URI);
         window.location.href = url;
     }
 
-    function getToken() {
+    function checkToken() {
         const hash = window.location.hash.substring(1).split('&').reduce((initial, item) => {
             if (item) { var parts = item.split('='); initial[parts[0]] = decodeURIComponent(parts[1]); }
             return initial;
         }, {});
-        window.location.hash = "";
-        return hash.access_token;
+        if (hash.access_token) {
+            window.location.hash = "";
+            return hash.access_token;
+        }
+        return null;
     }
 
-    async function spotifyCmd(cmd) {
+    async function spotifyCmd(endpoint, method = 'POST') {
         if(!spotifyToken) return;
-        const method = (cmd === 'next' || cmd === 'previous') ? 'POST' : 'PUT';
         try {
-            await fetch(`https://api.spotify.com/v1/me/player/${cmd}`, {
+            await fetch(`https://api.spotify.com/v1/me/player/$${endpoint}`, {
                 method: method,
                 headers: { 'Authorization': `Bearer ${spotifyToken}` }
             });
-            setTimeout(updateInfo, 500); // Refresh UI after command
-        } catch(e) { console.log("Spotify Cmd Error"); }
+            setTimeout(updateSpotifyUI, 400);
+        } catch(e) {}
     }
 
-    async function updateInfo() {
+    async function updateSpotifyUI() {
         if (!spotifyToken) return;
-        const res = await fetch('https://api.spotify.com/v1/me/player/currently-playing', {
-            headers: { 'Authorization': `Bearer ${spotifyToken}` }
-        });
-        if (res.status === 200) {
-            const data = await res.json();
-            currentTrack = data.item.name.toUpperCase();
-            currentArtist = data.item.artists[0].name.toUpperCase();
-        }
+        try {
+            const res = await fetch('https://api.spotify.com/v1/me/player/currently-playing', {
+                headers: { 'Authorization': `Bearer ${spotifyToken}` }
+            });
+            if (res.status === 200) {
+                const data = await res.json();
+                currentTrack = data.item.name.toUpperCase();
+                currentArtist = data.item.artists[0].name.toUpperCase();
+            }
+        } catch(e) {}
     }
 
-    // --- STARTUP LOGIC ---
-    const token = getToken();
+    // --- INITIALIZATION ---
     let dashReady = false;
+    const token = checkToken();
     if (token) {
         spotifyToken = token;
         dashReady = true;
         document.getElementById('intro').style.display = 'none';
         document.getElementById('hud').style.opacity = 1;
-        setInterval(updateInfo, 3000);
+        setInterval(updateSpotifyUI, 4000);
     }
 
     document.getElementById('intro').onclick = () => {
@@ -112,10 +132,13 @@
         document.getElementById('intro').classList.add('open');
         document.getElementById('scan-box').style.display = 'block';
         document.getElementById('scan-box').style.opacity = 1;
-        setTimeout(login, 4000);
+        setTimeout(() => {
+            document.getElementById('auth-status').innerText = "AUTHORIZING...";
+            setTimeout(login, 1500);
+        }, 3000);
     };
 
-    // --- THREE.JS VISUALS ---
+    // --- VISUALS ---
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(50, window.innerWidth/window.innerHeight, 0.1, 1000);
     const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -125,7 +148,7 @@
     const dashGroup = new THREE.Group();
     scene.add(dashGroup);
 
-    // Screen
+    // Screen setup
     const screenCanvas = document.getElementById('screenContent');
     const ctx = screenCanvas.getContext('2d');
     const screenTexture = new THREE.CanvasTexture(screenCanvas);
@@ -133,26 +156,25 @@
     monitor.position.z = 0.2;
     dashGroup.add(monitor);
 
-    // Buttons
+    // Mechanical Symbol Buttons
     const buttons = [];
     const controls = [
-        { label: '<<', x: -4.5, y: 1.5, cmd: 'previous' },
-        { label: '||', x: -4.5, y: 0, cmd: 'pause' }, // Use 'play' or 'pause' logic
-        { label: '>>', x: -4.5, y: -1.5, cmd: 'next' }
+        { sym: '|<', x: -4.5, y: 1.5, cmd: 'previous' },
+        { sym: '||', x: -4.5, y: 0, cmd: 'pause' }, 
+        { sym: '>|', x: -4.5, y: -1.5, cmd: 'next' }
     ];
 
     controls.forEach(cfg => {
-        const btn = new THREE.Mesh(new THREE.BoxGeometry(1.5, 1, 0.3), new THREE.MeshStandardMaterial({ color: 0x111111, emissive: 0xff3c00, emissiveIntensity: 0.2 }));
+        const btn = new THREE.Mesh(new THREE.BoxGeometry(1.6, 1.1, 0.3), new THREE.MeshStandardMaterial({ color: 0x111111, emissive: 0xff3c00, emissiveIntensity: 0.2 }));
         btn.position.set(cfg.x, cfg.y, 0.3);
         
-        // Text Label for button
         const lCanvas = document.createElement('canvas');
-        lCanvas.width = 64; lCanvas.height = 64;
+        lCanvas.width = 128; lCanvas.height = 128;
         const lCtx = lCanvas.getContext('2d');
-        lCtx.fillStyle = '#ff3c00'; lCtx.font = 'bold 30px Arial'; lCtx.textAlign = 'center';
-        lCtx.fillText(cfg.label, 32, 42);
-        const lTex = new THREE.CanvasTexture(lCanvas);
-        const labelMesh = new THREE.Mesh(new THREE.PlaneGeometry(0.8, 0.8), new THREE.MeshBasicMaterial({ map: lTex, transparent: true }));
+        lCtx.fillStyle = '#ff3c00'; lCtx.font = 'bold 50px Arial'; lCtx.textAlign = 'center';
+        lCtx.fillText(cfg.sym, 64, 85);
+        
+        const labelMesh = new THREE.Mesh(new THREE.PlaneGeometry(0.8, 0.8), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(lCanvas), transparent: true }));
         labelMesh.position.set(cfg.x, cfg.y, 0.46);
 
         btn.userData = { cmd: cfg.cmd };
@@ -160,10 +182,9 @@
         dashGroup.add(btn, labelMesh);
     });
 
-    scene.add(new THREE.PointLight(0xff3c00, 20, 20));
+    scene.add(new THREE.PointLight(0xff3c00, 25, 20));
     camera.position.z = 10;
 
-    // --- INTERACTION ---
     const raycaster = new THREE.Raycaster();
     const mouse = new THREE.Vector2();
     window.addEventListener('pointerdown', (e) => {
@@ -175,24 +196,34 @@
         if(hit.length > 0) {
             const b = hit[0].object;
             b.position.z = 0.1;
-            spotifyCmd(b.userData.cmd);
-            setTimeout(() => b.position.z = 0.3, 200);
+            spotifyCmd(b.userData.cmd, b.userData.cmd === 'pause' ? 'PUT' : 'POST');
+            setTimeout(() => b.position.z = 0.3, 150);
         }
     });
 
     function draw() {
         ctx.fillStyle = 'black'; ctx.fillRect(0, 0, 512, 512);
         ctx.strokeStyle = '#ff3c00'; ctx.lineWidth = 4; ctx.strokeRect(20, 20, 472, 472);
-        ctx.fillStyle = '#ff3c00';
-        ctx.font = 'bold 30px Courier'; ctx.fillText("WAYNETECH TACTICAL AUDIO", 60, 80);
-        ctx.font = '20px Courier'; ctx.fillText("STATUS: ACTIVE", 60, 120);
-        ctx.font = 'bold 35px Courier'; ctx.fillText(currentTrack.substring(0, 18), 60, 250);
-        ctx.font = '22px Courier'; ctx.fillText(currentArtist.substring(0, 22), 60, 300);
         
-        // Fake Waveform
-        for(let i=0; i<30; i++) {
-            let h = Math.random() * 60;
-            ctx.fillRect(60 + (i*13), 450 - h, 8, h);
+        // Header
+        ctx.fillStyle = '#ff3c00';
+        ctx.font = 'bold 28px Courier'; ctx.fillText("WAYNETECH TACTICAL AUDIO", 60, 80);
+        
+        // Battery/Fuel Gauge
+        ctx.font = '20px Courier'; ctx.fillText("PWR: " + batteryLevel, 360, 120);
+        ctx.strokeRect(360, 130, 100, 15);
+        ctx.fillRect(360, 130, parseInt(batteryLevel), 15);
+        
+        // Track Info
+        ctx.font = 'bold 38px Courier'; 
+        ctx.fillText(currentTrack.substring(0, 18), 60, 240);
+        ctx.font = '24px Courier'; 
+        ctx.fillText(currentArtist.substring(0, 22), 60, 290);
+        
+        // Dynamic Waveform
+        for(let i=0; i<25; i++) {
+            let h = Math.random() * 80;
+            ctx.fillRect(60 + (i*15), 450 - h, 10, h);
         }
         screenTexture.needsUpdate = true;
     }
@@ -201,11 +232,17 @@
         requestAnimationFrame(animate);
         if(dashReady) {
             draw();
-            dashGroup.rotation.y = Math.sin(Date.now() * 0.0005) * 0.1;
+            dashGroup.rotation.y = Math.sin(Date.now() * 0.0004) * 0.08;
         }
         renderer.render(scene, camera);
     }
     animate();
+
+    window.onresize = () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    };
 </script>
 </body>
 </html>
