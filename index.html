@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>BAT-OS | SYSTEM PERSISTENCE</title>
+    <title>BAT-OS | SYSTEM STABILITY</title>
     <link rel="icon" href="data:;base64,iVBORw0KGgo=">
     <style>
         :root { --glow: #ff3c00; --bg: #000; }
@@ -31,13 +31,13 @@
     <div id="right-door" class="door"></div>
     <div id="scan-box">
         <div id="laser"></div>
-        <p style="margin-top:280px; font-weight: bold; letter-spacing: 5px;" id="auth-status">IDENTIFYING...</p>
+        <p style="margin-top:280px; font-weight: bold; letter-spacing: 5px;" id="auth-status">RE-CALIBRATING...</p>
     </div>
     <div id="tap-msg" style="z-index:1003; font-size: 18px; border: 1px solid var(--glow); padding: 10px 20px;">[ INITIATE BOOT ]</div>
 </div>
 
 <div id="hud">
-    <div style="position:absolute; top:20px; left:30px; font-size:12px;">ENCRYPTED LINK: 256-BIT</div>
+    <div style="position:absolute; top:20px; left:30px; font-size:12px;">SYSTEM: SECURE</div>
 </div>
 
 <canvas id="screenContent" width="512" height="512"></canvas>
@@ -55,19 +55,18 @@
 
     let spotifyToken = localStorage.getItem('spotify_token');
     let currentTrack = "IDLE";
-    let currentArtist = "SCANNING...";
+    let currentArtist = "WAITING...";
     let batteryLevel = "---";
 
-    // --- AUTH REPAIR (V5.3) ---
-    function login() {
-        // Construct standard Spotify Auth URL
+    // --- AUTH REPAIR ---
+    function forceLogin() {
+        localStorage.removeItem('spotify_token'); // Wipe old data
         const authUrl = new URL('https://accounts.spotify.com/authorize');
         authUrl.searchParams.append('response_type', 'token');
         authUrl.searchParams.append('client_id', CLIENT_ID.trim());
         authUrl.searchParams.append('scope', SCOPES);
         authUrl.searchParams.append('redirect_uri', REDIRECT_URI);
-        authUrl.searchParams.append('show_dialog', 'true'); // Forces login to ensure token freshness
-        
+        authUrl.searchParams.append('show_dialog', 'true'); // Force user to see login screen
         window.location.href = authUrl.toString();
     }
 
@@ -93,10 +92,7 @@
             method: method,
             headers: { 'Authorization': `Bearer ${spotifyToken}` }
         });
-        if (res.status === 401) { // Token Expired
-            localStorage.removeItem('spotify_token');
-            window.location.reload();
-        }
+        if (res.status === 401) forceLogin(); // If token is bad, kick to login
     }
 
     async function updateSpotifyUI() {
@@ -107,11 +103,10 @@
             });
             if (res.status === 200) {
                 const data = await res.json();
-                currentTrack = data.item.name.toUpperCase();
-                currentArtist = data.item.artists[0].name.toUpperCase();
+                currentTrack = (data.item.name || "UNKNOWN").toUpperCase();
+                currentArtist = (data.item.artists[0].name || "UNKNOWN").toUpperCase();
             } else if (res.status === 401) {
-                localStorage.removeItem('spotify_token');
-                window.location.reload();
+                forceLogin();
             }
         } catch(e) {}
     }
@@ -120,11 +115,12 @@
     let dashReady = false;
     captureToken();
 
+    // Only skip intro if we actually have a token
     if (spotifyToken) {
         dashReady = true;
         document.getElementById('intro').style.display = 'none';
         document.getElementById('hud').style.opacity = 1;
-        setInterval(updateSpotifyUI, 5000);
+        setInterval(updateSpotifyUI, 3000);
         updateSpotifyUI();
     }
 
@@ -134,10 +130,12 @@
         document.getElementById('intro').classList.add('open');
         document.getElementById('scan-box').style.display = 'block';
         document.getElementById('scan-box').style.opacity = 1;
+        
+        // Final sequence before redirect
         setTimeout(() => {
-            document.getElementById('auth-status').innerText = "AUTHORIZING...";
-            setTimeout(login, 1000);
-        }, 2500);
+            document.getElementById('auth-status').innerText = "SYSTEM OVERRIDE...";
+            setTimeout(forceLogin, 1200);
+        }, 2000);
     };
 
     // --- VISUALS ---
@@ -186,7 +184,6 @@
         }
     });
 
-    // Battery Check
     if (navigator.getBattery) { navigator.getBattery().then(batt => { 
         batteryLevel = Math.floor(batt.level * 100) + "%";
         batt.onlevelchange = () => batteryLevel = Math.floor(batt.level * 100) + "%";
@@ -211,12 +208,6 @@
         renderer.render(scene, camera);
     }
     animate();
-
-    window.onresize = () => {
-        camera.aspect = window.innerWidth / window.innerHeight;
-        camera.updateProjectionMatrix();
-        renderer.setSize(window.innerWidth, window.innerHeight);
-    };
 </script>
 </body>
 </html>
