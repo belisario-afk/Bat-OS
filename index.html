@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>BAT-OS | STABLE MEDIA</title>
+    <title>BAT-OS | V7.2 STABLE</title>
     <link rel="icon" href="data:;base64,iVBORw0KGgo=">
     <style>
         :root { --glow: #ff3c00; --bg: #000; }
@@ -56,7 +56,7 @@
     let currentTrack = "IDLE";
     let currentArtist = "WAITING...";
     let albumImg = new Image();
-    albumImg.crossOrigin = "anonymous";
+    albumImg.crossOrigin = "Anonymous";
     let albumLoaded = false;
     let progressMs = 0;
     let durationMs = 1;
@@ -119,16 +119,13 @@
         playerInstance = new Spotify.Player({
             name: 'Batmobile Tactical OS',
             getOAuthToken: cb => { cb(spotifyToken); },
-            volume: 0.8
+            volume: 0.8,
+            enableMediaSession: true // Fixes the robustness warning
         });
 
         playerInstance.addListener('ready', ({ device_id }) => {
-            console.log('Player Ready:', device_id);
-            fetch('https://api.spotify.com/v1/me/player', {
-                method: 'PUT',
-                headers: { 'Authorization': `Bearer ${spotifyToken}`, 'Content-Type': 'application/json' },
-                body: JSON.stringify({ device_ids: [device_id], play: false })
-            });
+            console.log('Bat-OS Device Ready:', device_id);
+            // Manual transfer is safer to avoid 403
         });
 
         playerInstance.addListener('player_state_changed', state => {
@@ -194,7 +191,6 @@
         }
     });
 
-    // Boot Logic
     const isProcessingCode = await handleAuth();
     if (!isProcessingCode && spotifyToken) {
         dashReady = true;
@@ -220,35 +216,25 @@
         ctx.fillStyle = 'black'; ctx.fillRect(0, 0, 1024, 512);
         ctx.strokeStyle = '#ff3c00'; ctx.lineWidth = 4; ctx.strokeRect(20, 20, 984, 472);
         
-        // Album Art Render
         if (albumLoaded) {
             ctx.drawImage(albumImg, 60, 100, 320, 320);
             ctx.strokeStyle = '#ff3c00'; ctx.lineWidth = 2; ctx.strokeRect(60, 100, 320, 320);
         } else {
             ctx.fillStyle = '#111'; ctx.fillRect(60, 100, 320, 320);
-            ctx.fillStyle = '#ff3c00'; ctx.font = '20px Courier'; ctx.fillText("LOADING ART...", 140, 260);
+            ctx.fillStyle = '#ff3c00'; ctx.font = '20px Courier'; ctx.fillText("AWAITING MEDIA...", 140, 260);
         }
 
         ctx.fillStyle = '#ff3c00';
         ctx.font = 'bold 32px Courier'; ctx.fillText("WAYNETECH TACTICAL MEDIA", 450, 80);
         ctx.font = '24px Courier'; ctx.fillText("PWR: " + batteryLevel, 850, 130);
         ctx.strokeRect(850, 140, 120, 15); ctx.fillRect(850, 140, (parseInt(batteryLevel)/100)*120, 15);
-        
-        // Track Display
         ctx.font = 'bold 40px Courier'; ctx.fillText(currentTrack.substring(0, 22), 450, 220);
         ctx.font = '24px Courier'; ctx.fillText(currentArtist.substring(0, 28), 450, 270);
-        
-        // Progress
         const progWidth = 500;
         const progress = progressMs / durationMs;
         ctx.strokeRect(450, 320, progWidth, 10);
         ctx.fillRect(450, 320, (progWidth * progress) || 0, 10);
-
-        // Visualizer
-        for(let i=0; i<30; i++) {
-            let h = Math.random() * 60;
-            ctx.fillRect(450 + (i*17), 450 - h, 12, h);
-        }
+        for(let i=0; i<30; i++) { let h = Math.random() * 60; ctx.fillRect(450 + (i*17), 450 - h, 12, h); }
         screenTexture.needsUpdate = true;
     }
 
