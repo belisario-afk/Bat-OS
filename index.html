@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>BAT-OS | PKCE SECURE</title>
+    <title>BAT-OS | ZERO LOOP</title>
     <link rel="icon" href="data:;base64,iVBORw0KGgo=">
     <style>
         :root { --glow: #ff3c00; --bg: #000; }
@@ -28,13 +28,13 @@
     <div id="right-door" class="door"></div>
     <div id="scan-box">
         <div id="laser"></div>
-        <p style="margin-top:280px; font-weight: bold; letter-spacing: 5px;" id="auth-status">VERIFYING PKCE...</p>
+        <p style="margin-top:280px; font-weight: bold; letter-spacing: 5px;" id="auth-status">DECRYPTING...</p>
     </div>
     <div id="tap-msg" style="z-index:1003; font-size: 18px; border: 1px solid var(--glow); padding: 10px 20px;">[ INITIATE SECURE BOOT ]</div>
 </div>
 
 <div id="hud">
-    <div style="position:absolute; top:20px; left:30px; font-size:12px;">SECURITY: PKCE-ENCRYPTED</div>
+    <div style="position:absolute; top:20px; left:30px; font-size:12px;">SYSTEM: ENCRYPTED_PKCE</div>
 </div>
 
 <canvas id="screenContent" width="512" height="512"></canvas>
@@ -56,11 +56,10 @@
     let batteryLevel = "0%";
     let dashReady = false;
 
-    // --- PKCE CRYPTO HELPERS ---
-    const generateRandomString = (length) => {
-        const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-        const values = crypto.getRandomValues(new Uint8Array(length));
-        return values.reduce((acc, x) => acc + possible[x % possible.length], "");
+    // --- PKCE CRYPTO ---
+    const generateRandomString = (l) => {
+        const p = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+        return [...crypto.getRandomValues(new Uint8Array(l))].map(x => p[x % p.length]).join('');
     };
 
     const sha256 = async (plain) => {
@@ -74,12 +73,46 @@
             .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
     };
 
-    // --- PKCE LOGIN FLOW ---
+    // --- THE "LOOP KILLER" LOGIC ---
+    async function handleAuth() {
+        const urlParams = new URLSearchParams(window.location.search);
+        const code = urlParams.get('code');
+
+        if (code) {
+            // STOP EVERYTHING: We have a code, hide the intro and doors immediately
+            document.getElementById('intro').style.display = 'none';
+            document.getElementById('hud').style.opacity = 1;
+            
+            const codeVerifier = localStorage.getItem('code_verifier');
+            const params = new URLSearchParams({
+                client_id: CLIENT_ID,
+                grant_type: 'authorization_code',
+                code: code,
+                redirect_uri: REDIRECT_URI,
+                code_verifier: codeVerifier,
+            });
+
+            const res = await fetch('https://api.spotify.com/v1/me/player/currently-playing0', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: params
+            });
+
+            const data = await res.json();
+            if (data.access_token) {
+                localStorage.setItem('access_token', data.access_token);
+                // Redirect to a clean URL with no ?code=
+                window.location.href = REDIRECT_URI; 
+            }
+            return true;
+        }
+        return false;
+    }
+
     async function redirectToSpotify() {
         const codeVerifier = generateRandomString(64);
         const hashed = await sha256(codeVerifier);
         const codeChallenge = base64encode(hashed);
-
         localStorage.setItem('code_verifier', codeVerifier);
 
         const params = new URLSearchParams({
@@ -90,49 +123,27 @@
             code_challenge: codeChallenge,
             redirect_uri: REDIRECT_URI,
         });
-
         window.location.href = `https://accounts.spotify.com/authorize?${params.toString()}`;
     }
 
-    async function getAccessToken(code) {
-        const codeVerifier = localStorage.getItem('code_verifier');
-        const params = new URLSearchParams({
-            client_id: CLIENT_ID,
-            grant_type: 'authorization_code',
-            code: code,
-            redirect_uri: REDIRECT_URI,
-            code_verifier: codeVerifier,
-        });
-
-        const res = await fetch('https://api.spotify.com/v1/me/player/currently-playing0', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: params
-        });
-
-        const data = await res.json();
-        if (data.access_token) {
-            localStorage.setItem('access_token', data.access_token);
-            window.location.href = REDIRECT_URI; // Refresh clean
-        }
-    }
-
-    // --- API LOGIC ---
+    // --- API TOOLS ---
     async function updateSpotifyUI() {
         if (!spotifyToken) return;
-        const res = await fetch('https://api.spotify.com/v1/me/player/currently-playing', {
-            headers: { 'Authorization': `Bearer ${spotifyToken}` }
-        });
-        if (res.status === 200) {
-            const data = await res.json();
-            if (data.item) {
-                currentTrack = data.item.name.toUpperCase();
-                currentArtist = data.item.artists[0].name.toUpperCase();
+        try {
+            const res = await fetch('https://api.spotify.com/v1/me/player/currently-playing', {
+                headers: { 'Authorization': `Bearer ${spotifyToken}` }
+            });
+            if (res.status === 200) {
+                const data = await res.json();
+                if (data.item) {
+                    currentTrack = data.item.name.toUpperCase();
+                    currentArtist = data.item.artists[0].name.toUpperCase();
+                }
+            } else if (res.status === 401) {
+                localStorage.removeItem('access_token');
+                window.location.reload();
             }
-        } else if (res.status === 401) {
-            localStorage.removeItem('access_token');
-            window.location.reload();
-        }
+        } catch(e) {}
     }
 
     async function spotifyCmd(endpoint, method = 'POST') {
@@ -143,24 +154,19 @@
         setTimeout(updateSpotifyUI, 500);
     }
 
-    // --- BOOT PROCESS ---
-    const urlParams = new URLSearchParams(window.location.search);
-    const code = urlParams.get('code');
+    // --- BOOT PRIORITY ---
+    const isProcessingCode = await handleAuth();
 
-    if (code) {
-        getAccessToken(code);
-    } else if (spotifyToken) {
+    if (!isProcessingCode && spotifyToken) {
         dashReady = true;
-        document.addEventListener('DOMContentLoaded', () => {
-            document.getElementById('intro').style.display = 'none';
-            document.getElementById('hud').style.opacity = 1;
-            setInterval(updateSpotifyUI, 5000);
-            updateSpotifyUI();
-        });
+        document.getElementById('intro').style.display = 'none';
+        document.getElementById('hud').style.opacity = 1;
+        setInterval(updateSpotifyUI, 5000);
+        updateSpotifyUI();
     }
 
     document.getElementById('intro').onclick = () => {
-        if(dashReady) return;
+        if(dashReady || isProcessingCode) return;
         document.getElementById('tap-msg').style.display = 'none';
         document.getElementById('intro').classList.add('open');
         document.getElementById('scan-box').style.display = 'block';
@@ -168,7 +174,7 @@
         setTimeout(redirectToSpotify, 3500);
     };
 
-    // --- THREE.JS VISUALS (Same as before but with UI Refresh) ---
+    // --- VISUALS ---
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(50, window.innerWidth/window.innerHeight, 0.1, 1000);
     const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -219,7 +225,7 @@
         ctx.fillStyle = 'black'; ctx.fillRect(0, 0, 512, 512);
         ctx.strokeStyle = '#ff3c00'; ctx.lineWidth = 4; ctx.strokeRect(20, 20, 472, 472);
         ctx.fillStyle = '#ff3c00';
-        ctx.font = 'bold 28px Courier'; ctx.fillText("WAYNETECH SECURE LINK", 60, 80);
+        ctx.font = 'bold 28px Courier'; ctx.fillText("WAYNETECH COMMAND LINK", 60, 80);
         ctx.font = '20px Courier'; ctx.fillText("PWR: " + batteryLevel, 360, 120);
         ctx.strokeRect(360, 130, 100, 15); ctx.fillRect(360, 130, parseInt(batteryLevel) || 0, 15);
         ctx.font = 'bold 32px Courier'; ctx.fillText(currentTrack.substring(0, 20), 60, 240);
