@@ -3,13 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>BAT-OS | STEALTH STEREO</title>
+    <title>BAT-OS | PERSISTENT LINK</title>
     <link rel="icon" href="data:;base64,iVBORw0KGgo=">
     <style>
         :root { --glow: #ff3c00; --bg: #000; }
         body { margin: 0; overflow: hidden; background: var(--bg); font-family: 'Courier New', monospace; color: var(--glow); user-select: none; }
         
-        /* Intro/Auth Layer */
         #intro { position: fixed; inset: 0; z-index: 1000; cursor: pointer; display: flex; justify-content: center; align-items: center; background: #000; }
         .door { position: absolute; top: 0; height: 100%; width: 50.5%; background: #050505; border: 1px solid #111; transition: transform 2s cubic-bezier(0.8, 0, 0.2, 1); z-index: 1001; }
         #left-door { left: 0; } #right-door { right: 0; }
@@ -50,26 +49,16 @@
 <script type="module">
     import * as THREE from 'three';
 
-    // --- SPOTIFY CONFIG ---
     const CLIENT_ID = '2a31097ec0e64dc99ba46002bac64623';
     const REDIRECT_URI = 'https://belisario-afk.github.io/Bat-OS/'; 
     const SCOPES = 'user-read-currently-playing user-modify-playback-state';
 
-    let spotifyToken = null;
+    let spotifyToken = localStorage.getItem('spotify_token');
     let currentTrack = "IDLE";
     let currentArtist = "SCANNING...";
-    let batteryLevel = "100%";
+    let batteryLevel = "---";
 
-    // --- BATTERY LOGIC ---
-    if (navigator.getBattery) {
-        navigator.getBattery().then(batt => {
-            const updateBatt = () => { batteryLevel = Math.floor(batt.level * 100) + "%"; };
-            updateBatt();
-            batt.addEventListener('levelchange', updateBatt);
-        });
-    }
-
-    // --- AUTH LOGIC ---
+    // --- AUTHENTICATION REPAIR ---
     function login() {
         let url = 'https://accounts.spotify.com/authorize';
         url += '?response_type=token';
@@ -79,27 +68,34 @@
         window.location.href = url;
     }
 
-    function checkToken() {
+    function captureToken() {
         const hash = window.location.hash.substring(1).split('&').reduce((initial, item) => {
             if (item) { var parts = item.split('='); initial[parts[0]] = decodeURIComponent(parts[1]); }
             return initial;
         }, {});
+        
         if (hash.access_token) {
-            window.location.hash = "";
-            return hash.access_token;
+            localStorage.setItem('spotify_token', hash.access_token);
+            spotifyToken = hash.access_token;
+            // Clean the URL immediately
+            window.history.replaceState(null, null, window.location.pathname);
+            return true;
         }
-        return null;
+        return false;
     }
 
+    // --- API TOOLS ---
     async function spotifyCmd(endpoint, method = 'POST') {
         if(!spotifyToken) return;
-        try {
-            await fetch(`https://api.spotify.com/v1/me/player/$${endpoint}`, {
-                method: method,
-                headers: { 'Authorization': `Bearer ${spotifyToken}` }
-            });
-            setTimeout(updateSpotifyUI, 400);
-        } catch(e) {}
+        const res = await fetch(`https://api.spotify.com/v1/me/player/${endpoint}`, {
+            method: method,
+            headers: { 'Authorization': `Bearer ${spotifyToken}` }
+        });
+        if (res.status === 401) { // Token expired
+            localStorage.removeItem('spotify_token');
+            window.location.reload();
+        }
+        setTimeout(updateSpotifyUI, 400);
     }
 
     async function updateSpotifyUI() {
@@ -112,33 +108,38 @@
                 const data = await res.json();
                 currentTrack = data.item.name.toUpperCase();
                 currentArtist = data.item.artists[0].name.toUpperCase();
+            } else if (res.status === 401) {
+                localStorage.removeItem('spotify_token');
+                window.location.reload();
             }
         } catch(e) {}
     }
 
     // --- INITIALIZATION ---
     let dashReady = false;
-    const token = checkToken();
-    if (token) {
-        spotifyToken = token;
+    const hasJustLoggedIn = captureToken();
+
+    if (spotifyToken) {
         dashReady = true;
         document.getElementById('intro').style.display = 'none';
         document.getElementById('hud').style.opacity = 1;
         setInterval(updateSpotifyUI, 4000);
+        updateSpotifyUI();
     }
 
     document.getElementById('intro').onclick = () => {
+        if(dashReady) return;
         document.getElementById('tap-msg').style.display = 'none';
         document.getElementById('intro').classList.add('open');
         document.getElementById('scan-box').style.display = 'block';
         document.getElementById('scan-box').style.opacity = 1;
         setTimeout(() => {
             document.getElementById('auth-status').innerText = "AUTHORIZING...";
-            setTimeout(login, 1500);
-        }, 3000);
+            setTimeout(login, 1000);
+        }, 2500);
     };
 
-    // --- VISUALS ---
+    // --- THREE.JS VISUALS ---
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(50, window.innerWidth/window.innerHeight, 0.1, 1000);
     const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -148,7 +149,6 @@
     const dashGroup = new THREE.Group();
     scene.add(dashGroup);
 
-    // Screen setup
     const screenCanvas = document.getElementById('screenContent');
     const ctx = screenCanvas.getContext('2d');
     const screenTexture = new THREE.CanvasTexture(screenCanvas);
@@ -156,93 +156,60 @@
     monitor.position.z = 0.2;
     dashGroup.add(monitor);
 
-    // Mechanical Symbol Buttons
     const buttons = [];
-    const controls = [
-        { sym: '|<', x: -4.5, y: 1.5, cmd: 'previous' },
-        { sym: '||', x: -4.5, y: 0, cmd: 'pause' }, 
-        { sym: '>|', x: -4.5, y: -1.5, cmd: 'next' }
-    ];
+    const controls = [{ sym: '|<', x: -4.5, y: 1.5, cmd: 'previous' }, { sym: '||', x: -4.5, y: 0, cmd: 'pause' }, { sym: '>|', x: -4.5, y: -1.5, cmd: 'next' }];
 
     controls.forEach(cfg => {
         const btn = new THREE.Mesh(new THREE.BoxGeometry(1.6, 1.1, 0.3), new THREE.MeshStandardMaterial({ color: 0x111111, emissive: 0xff3c00, emissiveIntensity: 0.2 }));
         btn.position.set(cfg.x, cfg.y, 0.3);
-        
-        const lCanvas = document.createElement('canvas');
-        lCanvas.width = 128; lCanvas.height = 128;
-        const lCtx = lCanvas.getContext('2d');
-        lCtx.fillStyle = '#ff3c00'; lCtx.font = 'bold 50px Arial'; lCtx.textAlign = 'center';
-        lCtx.fillText(cfg.sym, 64, 85);
-        
+        const lCanvas = document.createElement('canvas'); lCanvas.width = 128; lCanvas.height = 128;
+        const lCtx = lCanvas.getContext('2d'); lCtx.fillStyle = '#ff3c00'; lCtx.font = 'bold 50px Arial'; lCtx.textAlign = 'center'; lCtx.fillText(cfg.sym, 64, 85);
         const labelMesh = new THREE.Mesh(new THREE.PlaneGeometry(0.8, 0.8), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(lCanvas), transparent: true }));
         labelMesh.position.set(cfg.x, cfg.y, 0.46);
-
-        btn.userData = { cmd: cfg.cmd };
-        buttons.push(btn);
-        dashGroup.add(btn, labelMesh);
+        btn.userData = { cmd: cfg.cmd }; buttons.push(btn); dashGroup.add(btn, labelMesh);
     });
 
     scene.add(new THREE.PointLight(0xff3c00, 25, 20));
     camera.position.z = 10;
 
-    const raycaster = new THREE.Raycaster();
-    const mouse = new THREE.Vector2();
     window.addEventListener('pointerdown', (e) => {
         if(!dashReady) return;
-        mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
-        mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+        const mouse = new THREE.Vector2((e.clientX / window.innerWidth) * 2 - 1, -(e.clientY / window.innerHeight) * 2 + 1);
+        const raycaster = new THREE.Raycaster();
         raycaster.setFromCamera(mouse, camera);
         const hit = raycaster.intersectObjects(buttons);
         if(hit.length > 0) {
-            const b = hit[0].object;
-            b.position.z = 0.1;
+            const b = hit[0].object; b.position.z = 0.1;
             spotifyCmd(b.userData.cmd, b.userData.cmd === 'pause' ? 'PUT' : 'POST');
             setTimeout(() => b.position.z = 0.3, 150);
         }
     });
 
+    // Battery Check
+    if (navigator.getBattery) { navigator.getBattery().then(batt => { 
+        batteryLevel = Math.floor(batt.level * 100) + "%";
+        batt.onlevelchange = () => batteryLevel = Math.floor(batt.level * 100) + "%";
+    }); }
+
     function draw() {
         ctx.fillStyle = 'black'; ctx.fillRect(0, 0, 512, 512);
         ctx.strokeStyle = '#ff3c00'; ctx.lineWidth = 4; ctx.strokeRect(20, 20, 472, 472);
-        
-        // Header
         ctx.fillStyle = '#ff3c00';
         ctx.font = 'bold 28px Courier'; ctx.fillText("WAYNETECH TACTICAL AUDIO", 60, 80);
-        
-        // Battery/Fuel Gauge
         ctx.font = '20px Courier'; ctx.fillText("PWR: " + batteryLevel, 360, 120);
-        ctx.strokeRect(360, 130, 100, 15);
-        ctx.fillRect(360, 130, parseInt(batteryLevel), 15);
-        
-        // Track Info
-        ctx.font = 'bold 38px Courier'; 
-        ctx.fillText(currentTrack.substring(0, 18), 60, 240);
-        ctx.font = '24px Courier'; 
-        ctx.fillText(currentArtist.substring(0, 22), 60, 290);
-        
-        // Dynamic Waveform
-        for(let i=0; i<25; i++) {
-            let h = Math.random() * 80;
-            ctx.fillRect(60 + (i*15), 450 - h, 10, h);
-        }
+        ctx.strokeRect(360, 130, 100, 15); ctx.fillRect(360, 130, parseInt(batteryLevel) || 0, 15);
+        ctx.font = 'bold 38px Courier'; ctx.fillText(currentTrack.substring(0, 18), 60, 240);
+        ctx.font = '24px Courier'; ctx.fillText(currentArtist.substring(0, 22), 60, 290);
+        for(let i=0; i<25; i++) { let h = Math.random() * 80; ctx.fillRect(60 + (i*15), 450 - h, 10, h); }
         screenTexture.needsUpdate = true;
     }
 
     function animate() {
         requestAnimationFrame(animate);
-        if(dashReady) {
-            draw();
-            dashGroup.rotation.y = Math.sin(Date.now() * 0.0004) * 0.08;
-        }
+        if(dashReady) { draw(); dashGroup.rotation.y = Math.sin(Date.now() * 0.0004) * 0.08; }
         renderer.render(scene, camera);
     }
     animate();
-
-    window.onresize = () => {
-        camera.aspect = window.innerWidth / window.innerHeight;
-        camera.updateProjectionMatrix();
-        renderer.setSize(window.innerWidth, window.innerHeight);
-    };
 </script>
 </body>
 </html>
