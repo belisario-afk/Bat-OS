@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>BAT-OS | TACTICAL MEDIA</title>
+    <title>BAT-OS | FULL INTEGRATION</title>
     <link rel="icon" href="data:;base64,iVBORw0KGgo=">
     <style>
         :root { --glow: #ff3c00; --bg: #000; }
@@ -28,16 +28,18 @@
     <div id="right-door" class="door"></div>
     <div id="scan-box">
         <div id="laser"></div>
-        <p style="margin-top:280px; font-weight: bold; letter-spacing: 5px;" id="auth-status">LINKING...</p>
+        <p style="margin-top:280px; font-weight: bold; letter-spacing: 5px;" id="auth-status">ESTABLISHING SECURE LINK...</p>
     </div>
-    <div id="tap-msg" style="z-index:1003; font-size: 18px; border: 1px solid var(--glow); padding: 10px 20px;">[ ACCESS COMMAND ]</div>
+    <div id="tap-msg" style="z-index:1003; font-size: 18px; border: 1px solid var(--glow); padding: 10px 20px;">[ INITIATE FULL BOOT ]</div>
 </div>
 
 <div id="hud">
-    <div style="position:absolute; top:20px; left:30px; font-size:12px;">ENCRYPTED_MEDIA_LINK: ON</div>
+    <div style="position:absolute; top:20px; left:30px; font-size:12px;">HARDWARE: CONNECTED | ENCRYPTION: PKCE</div>
 </div>
 
 <canvas id="screenContent" width="1024" height="512"></canvas>
+
+<script src="https://sdk.scdn.co/spotify-player.js"></script>
 
 <script type="importmap">
   { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
@@ -48,16 +50,17 @@
 
     const CLIENT_ID = '2a31097ec0e64dc99ba46002bac64623';
     const REDIRECT_URI = 'https://belisario-afk.github.io/Bat-OS/'; 
-    const SCOPES = 'user-read-currently-playing user-modify-playback-state';
+    const SCOPES = 'streaming user-read-currently-playing user-modify-playback-state user-read-playback-state';
 
     let spotifyToken = localStorage.getItem('access_token');
-    let currentTrack = "IDLE";
-    let currentArtist = "SCANNING...";
+    let currentTrack = "SYSTEM STANDBY";
+    let currentArtist = "SCANNING FOR MEDIA";
     let albumArtUrl = "";
     let progressMs = 0;
     let durationMs = 1;
     let batteryLevel = "0%";
     let dashReady = false;
+    let playerInstance;
 
     // --- PKCE CRYPTO ---
     const generateRandomString = (l) => {
@@ -73,7 +76,7 @@
         return btoa(String.fromCharCode.apply(null, new Uint8Array(input))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
     };
 
-    // --- AUTH BOOTSTRAP ---
+    // --- AUTH FLOW ---
     async function handleAuth() {
         const urlParams = new URLSearchParams(window.location.search);
         const code = urlParams.get('code');
@@ -108,68 +111,61 @@
         window.location.href = `https://accounts.spotify.com/authorize?${params.toString()}`;
     }
 
-    // --- API LOGIC ---
+    // --- SPOTIFY WEB PLAYER SDK ---
+    window.onSpotifyWebPlaybackSDKReady = () => {
+        if (!spotifyToken) return;
+        playerInstance = new Spotify.Player({
+            name: 'Batmobile Tactical OS',
+            getOAuthToken: cb => { cb(spotifyToken); },
+            volume: 0.8
+        });
+
+        playerInstance.addListener('ready', ({ device_id }) => {
+            console.log('Player Ready:', device_id);
+            // Optional: Auto-transfer playback to this tablet
+            fetch('https://api.spotify.com/v1/me/player', {
+                method: 'PUT',
+                headers: { 'Authorization': `Bearer ${spotifyToken}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ device_ids: [device_id], play: false })
+            });
+        });
+
+        playerInstance.addListener('player_state_changed', state => {
+            if (!state) return;
+            currentTrack = state.track_window.current_track.name.toUpperCase();
+            currentArtist = state.track_window.current_track.artists[0].name.toUpperCase();
+            progressMs = state.position;
+            durationMs = state.duration;
+            const newArt = state.track_window.current_track.album.images[0].url;
+            if (newArt !== albumArtUrl) {
+                albumArtUrl = newArt;
+                albumTextureLoader.load(albumArtUrl, (tex) => {
+                    albumMesh.material.map = tex;
+                    albumMesh.material.needsUpdate = true;
+                });
+            }
+        });
+
+        playerInstance.connect();
+    };
+
+    // --- API & UI ---
     const albumTextureLoader = new THREE.TextureLoader();
     albumTextureLoader.setCrossOrigin('anonymous');
     let albumMesh;
 
     async function updateSpotifyUI() {
-        if (!spotifyToken) return;
-        try {
-            const res = await fetch('https://api.spotify.com/v1/me/player/currently-playing', {
-                headers: { 'Authorization': `Bearer ${spotifyToken}` }
-            });
-            if (res.status === 200) {
-                const data = await res.json();
-                if (data.item) {
-                    currentTrack = data.item.name.toUpperCase();
-                    currentArtist = data.item.artists[0].name.toUpperCase();
-                    progressMs = data.progress_ms;
-                    durationMs = data.item.duration_ms;
-                    
-                    const newArt = data.item.album.images[0].url;
-                    if (newArt !== albumArtUrl) {
-                        albumArtUrl = newArt;
-                        albumTextureLoader.load(albumArtUrl, (tex) => {
-                            albumMesh.material.map = tex;
-                            albumMesh.material.needsUpdate = true;
-                        });
-                    }
-                }
-            } else if (res.status === 401) {
-                localStorage.removeItem('access_token');
-                window.location.reload();
-            }
-        } catch(e) {}
-    }
-
-    async function spotifyCmd(endpoint, method = 'POST') {
-        await fetch(`https://api.spotify.com/v1/me/player/${endpoint}`, {
-            method: method, headers: { 'Authorization': `Bearer ${spotifyToken}` }
+        if (!spotifyToken || playerInstance) return; // If SDK is active, it handles updates
+        const res = await fetch('https://api.spotify.com/v1/me/player/currently-playing', {
+            headers: { 'Authorization': `Bearer ${spotifyToken}` }
         });
-        setTimeout(updateSpotifyUI, 500);
+        if (res.status === 401) {
+            localStorage.removeItem('access_token');
+            window.location.reload();
+        }
     }
 
-    // --- SETUP ---
-    const isProcessingCode = await handleAuth();
-    if (!isProcessingCode && spotifyToken) {
-        dashReady = true;
-        document.getElementById('intro').style.display = 'none';
-        document.getElementById('hud').style.opacity = 1;
-        setInterval(updateSpotifyUI, 3000);
-        updateSpotifyUI();
-    }
-
-    document.getElementById('intro').onclick = () => {
-        if(dashReady || isProcessingCode) return;
-        document.getElementById('intro').classList.add('open');
-        document.getElementById('scan-box').style.display = 'block';
-        document.getElementById('scan-box').style.opacity = 1;
-        document.getElementById('tap-msg').style.display = 'none';
-        setTimeout(redirectToSpotify, 3000);
-    };
-
-    // --- VISUALS ---
+    // --- THREE.JS SCENE ---
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(50, window.innerWidth/window.innerHeight, 0.1, 1000);
     const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -184,15 +180,14 @@
     const monitor = new THREE.Mesh(new THREE.PlaneGeometry(8, 4), new THREE.MeshStandardMaterial({ map: screenTexture, emissive: 0xff3c00, emissiveIntensity: 0.2 }));
     monitor.position.z = 0.2; dashGroup.add(monitor);
 
-    // Album Cover 3D Object (Inside the dashboard)
     const albumGeo = new THREE.PlaneGeometry(2.8, 2.8);
-    const albumMat = new THREE.MeshStandardMaterial({ color: 0x222222 });
+    const albumMat = new THREE.MeshStandardMaterial({ color: 0x111111 });
     albumMesh = new THREE.Mesh(albumGeo, albumMat);
     albumMesh.position.set(-2, 0, 0.25);
     dashGroup.add(albumMesh);
 
     const buttons = [];
-    const controls = [{ sym: '|<', x: -5.5, y: 1.5, cmd: 'previous' }, { sym: '||', x: -5.5, y: 0, cmd: 'pause' }, { sym: '>|', x: -5.5, y: -1.5, cmd: 'next' }];
+    const controls = [{ sym: '|<', x: -5.5, y: 1.5, cmd: 'prev' }, { sym: '||', x: -5.5, y: 0, cmd: 'toggle' }, { sym: '>|', x: -5.5, y: -1.5, cmd: 'next' }];
     controls.forEach(cfg => {
         const btn = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.8, 0.3), new THREE.MeshStandardMaterial({ color: 0x111111, emissive: 0xff3c00, emissiveIntensity: 0.1 }));
         btn.position.set(cfg.x, cfg.y, 0.3);
@@ -214,10 +209,29 @@
         const hit = raycaster.intersectObjects(buttons);
         if(hit.length > 0) {
             const b = hit[0].object; b.position.z = 0.1;
-            spotifyCmd(b.userData.cmd, (b.userData.cmd === 'pause' || b.userData.cmd === 'play') ? 'PUT' : 'POST');
+            if (b.userData.cmd === 'toggle') playerInstance.togglePlay();
+            if (b.userData.cmd === 'next') playerInstance.nextTrack();
+            if (b.userData.cmd === 'prev') playerInstance.previousTrack();
             setTimeout(() => b.position.z = 0.3, 150);
         }
     });
+
+    // Battery & Setup Init
+    const isProcessingCode = await handleAuth();
+    if (!isProcessingCode && spotifyToken) {
+        dashReady = true;
+        document.getElementById('intro').style.display = 'none';
+        document.getElementById('hud').style.opacity = 1;
+    }
+
+    document.getElementById('intro').onclick = () => {
+        if(dashReady || isProcessingCode) return;
+        document.getElementById('intro').classList.add('open');
+        document.getElementById('scan-box').style.display = 'block';
+        document.getElementById('scan-box').style.opacity = 1;
+        document.getElementById('tap-msg').style.display = 'none';
+        setTimeout(redirectToSpotify, 3000);
+    };
 
     if (navigator.getBattery) { navigator.getBattery().then(batt => { 
         batteryLevel = Math.floor(batt.level * 100) + "%";
@@ -227,28 +241,17 @@
     function draw() {
         ctx.fillStyle = 'black'; ctx.fillRect(0, 0, 1024, 512);
         ctx.strokeStyle = '#ff3c00'; ctx.lineWidth = 4; ctx.strokeRect(20, 20, 984, 472);
-        
         ctx.fillStyle = '#ff3c00';
         ctx.font = 'bold 32px Courier'; ctx.fillText("WAYNETECH TACTICAL MEDIA", 450, 80);
-        
         ctx.font = '24px Courier'; ctx.fillText("PWR: " + batteryLevel, 850, 130);
         ctx.strokeRect(850, 140, 120, 15); ctx.fillRect(850, 140, (parseInt(batteryLevel)/100)*120, 15);
-        
-        // Track Display
         ctx.font = 'bold 44px Courier'; ctx.fillText(currentTrack.substring(0, 18), 450, 220);
         ctx.font = '28px Courier'; ctx.fillText(currentArtist.substring(0, 24), 450, 270);
-        
-        // Progress Bar
         const progWidth = 500;
         const progress = progressMs / durationMs;
         ctx.strokeRect(450, 320, progWidth, 10);
-        ctx.fillRect(450, 320, progWidth * progress, 10);
-
-        // Visualizer
-        for(let i=0; i<30; i++) {
-            let h = Math.random() * 60;
-            ctx.fillRect(450 + (i*17), 450 - h, 12, h);
-        }
+        ctx.fillRect(450, 320, (progWidth * progress) || 0, 10);
+        for(let i=0; i<30; i++) { let h = Math.random() * 60; ctx.fillRect(450 + (i*17), 450 - h, 12, h); }
         screenTexture.needsUpdate = true;
     }
 
