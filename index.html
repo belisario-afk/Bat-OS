@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>BAT-OS | ZERO LOOP</title>
+    <title>BAT-OS | TACTICAL MEDIA</title>
     <link rel="icon" href="data:;base64,iVBORw0KGgo=">
     <style>
         :root { --glow: #ff3c00; --bg: #000; }
@@ -28,16 +28,16 @@
     <div id="right-door" class="door"></div>
     <div id="scan-box">
         <div id="laser"></div>
-        <p style="margin-top:280px; font-weight: bold; letter-spacing: 5px;" id="auth-status">DECRYPTING...</p>
+        <p style="margin-top:280px; font-weight: bold; letter-spacing: 5px;" id="auth-status">LINKING...</p>
     </div>
-    <div id="tap-msg" style="z-index:1003; font-size: 18px; border: 1px solid var(--glow); padding: 10px 20px;">[ INITIATE SECURE BOOT ]</div>
+    <div id="tap-msg" style="z-index:1003; font-size: 18px; border: 1px solid var(--glow); padding: 10px 20px;">[ ACCESS COMMAND ]</div>
 </div>
 
 <div id="hud">
-    <div style="position:absolute; top:20px; left:30px; font-size:12px;">SYSTEM: ENCRYPTED_PKCE</div>
+    <div style="position:absolute; top:20px; left:30px; font-size:12px;">ENCRYPTED_MEDIA_LINK: ON</div>
 </div>
 
-<canvas id="screenContent" width="512" height="512"></canvas>
+<canvas id="screenContent" width="1024" height="512"></canvas>
 
 <script type="importmap">
   { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
@@ -51,8 +51,11 @@
     const SCOPES = 'user-read-currently-playing user-modify-playback-state';
 
     let spotifyToken = localStorage.getItem('access_token');
-    let currentTrack = "SYSTEM STANDBY";
-    let currentArtist = "AWAITING LINK";
+    let currentTrack = "IDLE";
+    let currentArtist = "SCANNING...";
+    let albumArtUrl = "";
+    let progressMs = 0;
+    let durationMs = 1;
     let batteryLevel = "0%";
     let dashReady = false;
 
@@ -61,47 +64,32 @@
         const p = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
         return [...crypto.getRandomValues(new Uint8Array(l))].map(x => p[x % p.length]).join('');
     };
-
     const sha256 = async (plain) => {
         const encoder = new TextEncoder();
         const data = encoder.encode(plain);
         return window.crypto.subtle.digest('SHA-256', data);
     };
-
     const base64encode = (input) => {
-        return btoa(String.fromCharCode.apply(null, new Uint8Array(input)))
-            .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+        return btoa(String.fromCharCode.apply(null, new Uint8Array(input))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
     };
 
-    // --- THE "LOOP KILLER" LOGIC ---
+    // --- AUTH BOOTSTRAP ---
     async function handleAuth() {
         const urlParams = new URLSearchParams(window.location.search);
         const code = urlParams.get('code');
-
         if (code) {
-            // STOP EVERYTHING: We have a code, hide the intro and doors immediately
             document.getElementById('intro').style.display = 'none';
-            document.getElementById('hud').style.opacity = 1;
-            
             const codeVerifier = localStorage.getItem('code_verifier');
             const params = new URLSearchParams({
-                client_id: CLIENT_ID,
-                grant_type: 'authorization_code',
-                code: code,
-                redirect_uri: REDIRECT_URI,
-                code_verifier: codeVerifier,
+                client_id: CLIENT_ID, grant_type: 'authorization_code',
+                code: code, redirect_uri: REDIRECT_URI, code_verifier: codeVerifier,
             });
-
-            const res = await fetch('https://api.spotify.com/v1/me/player/currently-playing0', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: params
+            const res = await fetch('https://accounts.spotify.com/api/token', {
+                method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: params
             });
-
             const data = await res.json();
             if (data.access_token) {
                 localStorage.setItem('access_token', data.access_token);
-                // Redirect to a clean URL with no ?code=
                 window.location.href = REDIRECT_URI; 
             }
             return true;
@@ -110,23 +98,21 @@
     }
 
     async function redirectToSpotify() {
-        const codeVerifier = generateRandomString(64);
-        const hashed = await sha256(codeVerifier);
-        const codeChallenge = base64encode(hashed);
-        localStorage.setItem('code_verifier', codeVerifier);
-
+        const verifier = generateRandomString(64);
+        const challenge = base64encode(await sha256(verifier));
+        localStorage.setItem('code_verifier', verifier);
         const params = new URLSearchParams({
-            response_type: 'code',
-            client_id: CLIENT_ID,
-            scope: SCOPES,
-            code_challenge_method: 'S256',
-            code_challenge: codeChallenge,
-            redirect_uri: REDIRECT_URI,
+            response_type: 'code', client_id: CLIENT_ID, scope: SCOPES,
+            code_challenge_method: 'S256', code_challenge: challenge, redirect_uri: REDIRECT_URI,
         });
         window.location.href = `https://accounts.spotify.com/authorize?${params.toString()}`;
     }
 
-    // --- API TOOLS ---
+    // --- API LOGIC ---
+    const albumTextureLoader = new THREE.TextureLoader();
+    albumTextureLoader.setCrossOrigin('anonymous');
+    let albumMesh;
+
     async function updateSpotifyUI() {
         if (!spotifyToken) return;
         try {
@@ -138,6 +124,17 @@
                 if (data.item) {
                     currentTrack = data.item.name.toUpperCase();
                     currentArtist = data.item.artists[0].name.toUpperCase();
+                    progressMs = data.progress_ms;
+                    durationMs = data.item.duration_ms;
+                    
+                    const newArt = data.item.album.images[0].url;
+                    if (newArt !== albumArtUrl) {
+                        albumArtUrl = newArt;
+                        albumTextureLoader.load(albumArtUrl, (tex) => {
+                            albumMesh.material.map = tex;
+                            albumMesh.material.needsUpdate = true;
+                        });
+                    }
                 }
             } else if (res.status === 401) {
                 localStorage.removeItem('access_token');
@@ -148,30 +145,28 @@
 
     async function spotifyCmd(endpoint, method = 'POST') {
         await fetch(`https://api.spotify.com/v1/me/player/${endpoint}`, {
-            method: method,
-            headers: { 'Authorization': `Bearer ${spotifyToken}` }
+            method: method, headers: { 'Authorization': `Bearer ${spotifyToken}` }
         });
         setTimeout(updateSpotifyUI, 500);
     }
 
-    // --- BOOT PRIORITY ---
+    // --- SETUP ---
     const isProcessingCode = await handleAuth();
-
     if (!isProcessingCode && spotifyToken) {
         dashReady = true;
         document.getElementById('intro').style.display = 'none';
         document.getElementById('hud').style.opacity = 1;
-        setInterval(updateSpotifyUI, 5000);
+        setInterval(updateSpotifyUI, 3000);
         updateSpotifyUI();
     }
 
     document.getElementById('intro').onclick = () => {
         if(dashReady || isProcessingCode) return;
-        document.getElementById('tap-msg').style.display = 'none';
         document.getElementById('intro').classList.add('open');
         document.getElementById('scan-box').style.display = 'block';
         document.getElementById('scan-box').style.opacity = 1;
-        setTimeout(redirectToSpotify, 3500);
+        document.getElementById('tap-msg').style.display = 'none';
+        setTimeout(redirectToSpotify, 3000);
     };
 
     // --- VISUALS ---
@@ -182,20 +177,28 @@
     document.body.appendChild(renderer.domElement);
     const dashGroup = new THREE.Group();
     scene.add(dashGroup);
+
     const screenCanvas = document.getElementById('screenContent');
     const ctx = screenCanvas.getContext('2d');
     const screenTexture = new THREE.CanvasTexture(screenCanvas);
-    const monitor = new THREE.Mesh(new THREE.PlaneGeometry(6, 4), new THREE.MeshStandardMaterial({ map: screenTexture, emissive: 0xff3c00, emissiveIntensity: 0.3 }));
+    const monitor = new THREE.Mesh(new THREE.PlaneGeometry(8, 4), new THREE.MeshStandardMaterial({ map: screenTexture, emissive: 0xff3c00, emissiveIntensity: 0.2 }));
     monitor.position.z = 0.2; dashGroup.add(monitor);
 
+    // Album Cover 3D Object (Inside the dashboard)
+    const albumGeo = new THREE.PlaneGeometry(2.8, 2.8);
+    const albumMat = new THREE.MeshStandardMaterial({ color: 0x222222 });
+    albumMesh = new THREE.Mesh(albumGeo, albumMat);
+    albumMesh.position.set(-2, 0, 0.25);
+    dashGroup.add(albumMesh);
+
     const buttons = [];
-    const controls = [{ sym: '|<', x: -4.5, y: 1.5, cmd: 'previous' }, { sym: '||', x: -4.5, y: 0, cmd: 'pause' }, { sym: '>|', x: -4.5, y: -1.5, cmd: 'next' }];
+    const controls = [{ sym: '|<', x: -5.5, y: 1.5, cmd: 'previous' }, { sym: '||', x: -5.5, y: 0, cmd: 'pause' }, { sym: '>|', x: -5.5, y: -1.5, cmd: 'next' }];
     controls.forEach(cfg => {
-        const btn = new THREE.Mesh(new THREE.BoxGeometry(1.6, 1.1, 0.3), new THREE.MeshStandardMaterial({ color: 0x111111, emissive: 0xff3c00, emissiveIntensity: 0.2 }));
+        const btn = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.8, 0.3), new THREE.MeshStandardMaterial({ color: 0x111111, emissive: 0xff3c00, emissiveIntensity: 0.1 }));
         btn.position.set(cfg.x, cfg.y, 0.3);
-        const lCanvas = document.createElement('canvas'); lCanvas.width = 128; lCanvas.height = 128;
-        const lCtx = lCanvas.getContext('2d'); lCtx.fillStyle = '#ff3c00'; lCtx.font = 'bold 50px Arial'; lCtx.textAlign = 'center'; lCtx.fillText(cfg.sym, 64, 85);
-        const labelMesh = new THREE.Mesh(new THREE.PlaneGeometry(0.8, 0.8), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(lCanvas), transparent: true }));
+        const lCanvas = document.createElement('canvas'); lCanvas.width = 64; lCanvas.height = 64;
+        const lCtx = lCanvas.getContext('2d'); lCtx.fillStyle = '#ff3c00'; lCtx.font = 'bold 30px Arial'; lCtx.textAlign = 'center'; lCtx.fillText(cfg.sym, 32, 45);
+        const labelMesh = new THREE.Mesh(new THREE.PlaneGeometry(0.6, 0.6), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(lCanvas), transparent: true }));
         labelMesh.position.set(cfg.x, cfg.y, 0.46);
         btn.userData = { cmd: cfg.cmd }; buttons.push(btn); dashGroup.add(btn, labelMesh);
     });
@@ -211,7 +214,7 @@
         const hit = raycaster.intersectObjects(buttons);
         if(hit.length > 0) {
             const b = hit[0].object; b.position.z = 0.1;
-            spotifyCmd(b.userData.cmd, b.userData.cmd === 'pause' ? 'PUT' : 'POST');
+            spotifyCmd(b.userData.cmd, (b.userData.cmd === 'pause' || b.userData.cmd === 'play') ? 'PUT' : 'POST');
             setTimeout(() => b.position.z = 0.3, 150);
         }
     });
@@ -222,21 +225,36 @@
     }); }
 
     function draw() {
-        ctx.fillStyle = 'black'; ctx.fillRect(0, 0, 512, 512);
-        ctx.strokeStyle = '#ff3c00'; ctx.lineWidth = 4; ctx.strokeRect(20, 20, 472, 472);
+        ctx.fillStyle = 'black'; ctx.fillRect(0, 0, 1024, 512);
+        ctx.strokeStyle = '#ff3c00'; ctx.lineWidth = 4; ctx.strokeRect(20, 20, 984, 472);
+        
         ctx.fillStyle = '#ff3c00';
-        ctx.font = 'bold 28px Courier'; ctx.fillText("WAYNETECH COMMAND LINK", 60, 80);
-        ctx.font = '20px Courier'; ctx.fillText("PWR: " + batteryLevel, 360, 120);
-        ctx.strokeRect(360, 130, 100, 15); ctx.fillRect(360, 130, parseInt(batteryLevel) || 0, 15);
-        ctx.font = 'bold 32px Courier'; ctx.fillText(currentTrack.substring(0, 20), 60, 240);
-        ctx.font = '24px Courier'; ctx.fillText(currentArtist.substring(0, 22), 60, 290);
-        for(let i=0; i<25; i++) { let h = Math.random() * 80; ctx.fillRect(60 + (i*15), 450 - h, 10, h); }
+        ctx.font = 'bold 32px Courier'; ctx.fillText("WAYNETECH TACTICAL MEDIA", 450, 80);
+        
+        ctx.font = '24px Courier'; ctx.fillText("PWR: " + batteryLevel, 850, 130);
+        ctx.strokeRect(850, 140, 120, 15); ctx.fillRect(850, 140, (parseInt(batteryLevel)/100)*120, 15);
+        
+        // Track Display
+        ctx.font = 'bold 44px Courier'; ctx.fillText(currentTrack.substring(0, 18), 450, 220);
+        ctx.font = '28px Courier'; ctx.fillText(currentArtist.substring(0, 24), 450, 270);
+        
+        // Progress Bar
+        const progWidth = 500;
+        const progress = progressMs / durationMs;
+        ctx.strokeRect(450, 320, progWidth, 10);
+        ctx.fillRect(450, 320, progWidth * progress, 10);
+
+        // Visualizer
+        for(let i=0; i<30; i++) {
+            let h = Math.random() * 60;
+            ctx.fillRect(450 + (i*17), 450 - h, 12, h);
+        }
         screenTexture.needsUpdate = true;
     }
 
     function animate() {
         requestAnimationFrame(animate);
-        if(dashReady) { draw(); dashGroup.rotation.y = Math.sin(Date.now() * 0.0004) * 0.08; }
+        if(dashReady) { draw(); dashGroup.rotation.y = Math.sin(Date.now() * 0.0004) * 0.05; }
         renderer.render(scene, camera);
     }
     animate();
