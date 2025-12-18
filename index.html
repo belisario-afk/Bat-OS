@@ -3,22 +3,19 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>BAT-OS | TERMINAL V5.5</title>
+    <title>BAT-OS | PKCE SECURE</title>
     <link rel="icon" href="data:;base64,iVBORw0KGgo=">
     <style>
         :root { --glow: #ff3c00; --bg: #000; }
         body { margin: 0; overflow: hidden; background: var(--bg); font-family: 'Courier New', monospace; color: var(--glow); user-select: none; }
-        
         #intro { position: fixed; inset: 0; z-index: 1000; cursor: pointer; display: flex; justify-content: center; align-items: center; background: #000; }
         .door { position: absolute; top: 0; height: 100%; width: 50.5%; background: #050505; border: 1px solid #111; transition: transform 2s cubic-bezier(0.8, 0, 0.2, 1); z-index: 1001; }
         #left-door { left: 0; } #right-door { right: 0; }
         .open #left-door { transform: translateX(-100%); }
         .open #right-door { transform: translateX(100%); }
-
         #scan-box { display: none; position: relative; z-index: 1002; text-align: center; }
         #laser { width: 250px; height: 3px; background: var(--glow); box-shadow: 0 0 20px var(--glow); position: absolute; animation: moveLaser 1.5s ease-in-out infinite; }
         @keyframes moveLaser { 0%, 100% { top: 0; } 50% { top: 250px; } }
-
         #hud { position: absolute; inset: 0; pointer-events: none; z-index: 10; opacity: 0; transition: opacity 1.5s; }
         canvas { display: block; }
         #screenContent { display: none; }
@@ -31,13 +28,13 @@
     <div id="right-door" class="door"></div>
     <div id="scan-box">
         <div id="laser"></div>
-        <p style="margin-top:280px; font-weight: bold; letter-spacing: 5px;" id="auth-status">LINKING...</p>
+        <p style="margin-top:280px; font-weight: bold; letter-spacing: 5px;" id="auth-status">VERIFYING PKCE...</p>
     </div>
-    <div id="tap-msg" style="z-index:1003; font-size: 18px; border: 1px solid var(--glow); padding: 10px 20px;">[ INITIATE BOOT ]</div>
+    <div id="tap-msg" style="z-index:1003; font-size: 18px; border: 1px solid var(--glow); padding: 10px 20px;">[ INITIATE SECURE BOOT ]</div>
 </div>
 
 <div id="hud">
-    <div style="position:absolute; top:20px; left:30px; font-size:12px;">STATUS: ENCRYPTED</div>
+    <div style="position:absolute; top:20px; left:30px; font-size:12px;">SECURITY: PKCE-ENCRYPTED</div>
 </div>
 
 <canvas id="screenContent" width="512" height="512"></canvas>
@@ -53,98 +50,140 @@
     const REDIRECT_URI = 'https://belisario-afk.github.io/Bat-OS/'; 
     const SCOPES = 'user-read-currently-playing user-modify-playback-state';
 
-    let spotifyToken = localStorage.getItem('bat_os_token');
-    let currentTrack = "SYSTEM IDLE";
-    let currentArtist = "WAITING...";
+    let spotifyToken = localStorage.getItem('access_token');
+    let currentTrack = "SYSTEM STANDBY";
+    let currentArtist = "AWAITING LINK";
     let batteryLevel = "0%";
     let dashReady = false;
 
-    // --- STEP 1: TOKEN CAPTURE (Runs immediately before anything else) ---
-    function captureToken() {
-        const urlParams = new URLSearchParams(window.location.hash.substring(1));
-        const token = urlParams.get('access_token');
-        
-        if (token) {
-            localStorage.setItem('bat_os_token', token);
-            spotifyToken = token;
-            // Clear hash from URL to prevent loop
-            window.history.replaceState(null, null, window.location.pathname);
-            return true;
+    // --- PKCE CRYPTO HELPERS ---
+    const generateRandomString = (length) => {
+        const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+        const values = crypto.getRandomValues(new Uint8Array(length));
+        return values.reduce((acc, x) => acc + possible[x % possible.length], "");
+    };
+
+    const sha256 = async (plain) => {
+        const encoder = new TextEncoder();
+        const data = encoder.encode(plain);
+        return window.crypto.subtle.digest('SHA-256', data);
+    };
+
+    const base64encode = (input) => {
+        return btoa(String.fromCharCode.apply(null, new Uint8Array(input)))
+            .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    };
+
+    // --- PKCE LOGIN FLOW ---
+    async function redirectToSpotify() {
+        const codeVerifier = generateRandomString(64);
+        const hashed = await sha256(codeVerifier);
+        const codeChallenge = base64encode(hashed);
+
+        localStorage.setItem('code_verifier', codeVerifier);
+
+        const params = new URLSearchParams({
+            response_type: 'code',
+            client_id: CLIENT_ID,
+            scope: SCOPES,
+            code_challenge_method: 'S256',
+            code_challenge: codeChallenge,
+            redirect_uri: REDIRECT_URI,
+        });
+
+        window.location.href = `https://accounts.spotify.com/authorize?${params.toString()}`;
+    }
+
+    async function getAccessToken(code) {
+        const codeVerifier = localStorage.getItem('code_verifier');
+        const params = new URLSearchParams({
+            client_id: CLIENT_ID,
+            grant_type: 'authorization_code',
+            code: code,
+            redirect_uri: REDIRECT_URI,
+            code_verifier: codeVerifier,
+        });
+
+        const res = await fetch('https://api.spotify.com/v1/me/player/currently-playing0', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: params
+        });
+
+        const data = await res.json();
+        if (data.access_token) {
+            localStorage.setItem('access_token', data.access_token);
+            window.location.href = REDIRECT_URI; // Refresh clean
         }
-        return false;
     }
 
-    // --- STEP 2: AUTH TRIGGER ---
-    function startAuth() {
-        localStorage.removeItem('bat_os_token'); // Purge old data
-        const authUrl = `https://accounts.spotify.com/authorize?client_id=${CLIENT_ID}&response_type=token&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&scope=${encodeURIComponent(SCOPES)}&show_dialog=true`;
-        window.location.href = authUrl;
-    }
-
-    // --- STEP 3: API CALLS ---
-    async function spotifyAction(endpoint, method = 'POST') {
-        if(!spotifyToken) return;
-        try {
-            const res = await fetch(`https://api.spotify.com/v1/me/player/${endpoint}`, {
-                method: method,
-                headers: { 'Authorization': `Bearer ${spotifyToken}` }
-            });
-            if (res.status === 401) startAuth(); // Token invalid/expired
-            setTimeout(updateDisplay, 500);
-        } catch(e) {}
-    }
-
-    async function updateDisplay() {
+    // --- API LOGIC ---
+    async function updateSpotifyUI() {
         if (!spotifyToken) return;
-        try {
-            const res = await fetch('https://api.spotify.com/v1/me/player/currently-playing', {
-                headers: { 'Authorization': `Bearer ${spotifyToken}` }
-            });
-            if (res.status === 200) {
-                const data = await res.json();
-                if (data.item) {
-                    currentTrack = data.item.name.toUpperCase();
-                    currentArtist = data.item.artists[0].name.toUpperCase();
-                }
-            } else if (res.status === 401) {
-                startAuth();
+        const res = await fetch('https://api.spotify.com/v1/me/player/currently-playing', {
+            headers: { 'Authorization': `Bearer ${spotifyToken}` }
+        });
+        if (res.status === 200) {
+            const data = await res.json();
+            if (data.item) {
+                currentTrack = data.item.name.toUpperCase();
+                currentArtist = data.item.artists[0].name.toUpperCase();
             }
-        } catch(e) {}
+        } else if (res.status === 401) {
+            localStorage.removeItem('access_token');
+            window.location.reload();
+        }
     }
 
-    // --- STEP 4: INITIALIZE DASHBOARD ---
-    captureToken();
+    async function spotifyCmd(endpoint, method = 'POST') {
+        await fetch(`https://api.spotify.com/v1/me/player/${endpoint}`, {
+            method: method,
+            headers: { 'Authorization': `Bearer ${spotifyToken}` }
+        });
+        setTimeout(updateSpotifyUI, 500);
+    }
 
-    if (spotifyToken) {
+    // --- BOOT PROCESS ---
+    const urlParams = new URLSearchParams(window.location.search);
+    const code = urlParams.get('code');
+
+    if (code) {
+        getAccessToken(code);
+    } else if (spotifyToken) {
         dashReady = true;
         document.addEventListener('DOMContentLoaded', () => {
             document.getElementById('intro').style.display = 'none';
             document.getElementById('hud').style.opacity = 1;
-            setInterval(updateDisplay, 4000);
-            updateDisplay();
+            setInterval(updateSpotifyUI, 5000);
+            updateSpotifyUI();
         });
     }
 
-    // --- DASHBOARD UI & VISUALS ---
+    document.getElementById('intro').onclick = () => {
+        if(dashReady) return;
+        document.getElementById('tap-msg').style.display = 'none';
+        document.getElementById('intro').classList.add('open');
+        document.getElementById('scan-box').style.display = 'block';
+        document.getElementById('scan-box').style.opacity = 1;
+        setTimeout(redirectToSpotify, 3500);
+    };
+
+    // --- THREE.JS VISUALS (Same as before but with UI Refresh) ---
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(50, window.innerWidth/window.innerHeight, 0.1, 1000);
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(window.innerWidth, window.innerHeight);
     document.body.appendChild(renderer.domElement);
-
     const dashGroup = new THREE.Group();
     scene.add(dashGroup);
-
     const screenCanvas = document.getElementById('screenContent');
     const ctx = screenCanvas.getContext('2d');
     const screenTexture = new THREE.CanvasTexture(screenCanvas);
     const monitor = new THREE.Mesh(new THREE.PlaneGeometry(6, 4), new THREE.MeshStandardMaterial({ map: screenTexture, emissive: 0xff3c00, emissiveIntensity: 0.3 }));
-    monitor.position.z = 0.2;
-    dashGroup.add(monitor);
+    monitor.position.z = 0.2; dashGroup.add(monitor);
 
     const buttons = [];
     const controls = [{ sym: '|<', x: -4.5, y: 1.5, cmd: 'previous' }, { sym: '||', x: -4.5, y: 0, cmd: 'pause' }, { sym: '>|', x: -4.5, y: -1.5, cmd: 'next' }];
-
     controls.forEach(cfg => {
         const btn = new THREE.Mesh(new THREE.BoxGeometry(1.6, 1.1, 0.3), new THREE.MeshStandardMaterial({ color: 0x111111, emissive: 0xff3c00, emissiveIntensity: 0.2 }));
         btn.position.set(cfg.x, cfg.y, 0.3);
@@ -158,30 +197,19 @@
     scene.add(new THREE.PointLight(0xff3c00, 25, 20));
     camera.position.z = 10;
 
-    // Interaction
     window.addEventListener('pointerdown', (e) => {
-        if (!dashReady) {
-            // Handle Intro Click
-            document.getElementById('tap-msg').style.display = 'none';
-            document.getElementById('intro').classList.add('open');
-            document.getElementById('scan-box').style.display = 'block';
-            document.getElementById('scan-box').style.opacity = 1;
-            setTimeout(startAuth, 3500);
-            return;
-        }
-        
+        if (!dashReady) return;
         const mouse = new THREE.Vector2((e.clientX / window.innerWidth) * 2 - 1, -(e.clientY / window.innerHeight) * 2 + 1);
         const raycaster = new THREE.Raycaster();
         raycaster.setFromCamera(mouse, camera);
         const hit = raycaster.intersectObjects(buttons);
         if(hit.length > 0) {
             const b = hit[0].object; b.position.z = 0.1;
-            spotifyAction(b.userData.cmd, b.userData.cmd === 'pause' ? 'PUT' : 'POST');
+            spotifyCmd(b.userData.cmd, b.userData.cmd === 'pause' ? 'PUT' : 'POST');
             setTimeout(() => b.position.z = 0.3, 150);
         }
     });
 
-    // Battery
     if (navigator.getBattery) { navigator.getBattery().then(batt => { 
         batteryLevel = Math.floor(batt.level * 100) + "%";
         batt.onlevelchange = () => batteryLevel = Math.floor(batt.level * 100) + "%";
@@ -191,7 +219,7 @@
         ctx.fillStyle = 'black'; ctx.fillRect(0, 0, 512, 512);
         ctx.strokeStyle = '#ff3c00'; ctx.lineWidth = 4; ctx.strokeRect(20, 20, 472, 472);
         ctx.fillStyle = '#ff3c00';
-        ctx.font = 'bold 28px Courier'; ctx.fillText("WAYNETECH TACTICAL AUDIO", 60, 80);
+        ctx.font = 'bold 28px Courier'; ctx.fillText("WAYNETECH SECURE LINK", 60, 80);
         ctx.font = '20px Courier'; ctx.fillText("PWR: " + batteryLevel, 360, 120);
         ctx.strokeRect(360, 130, 100, 15); ctx.fillRect(360, 130, parseInt(batteryLevel) || 0, 15);
         ctx.font = 'bold 32px Courier'; ctx.fillText(currentTrack.substring(0, 20), 60, 240);
