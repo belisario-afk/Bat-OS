@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>BAT-OS | SYSTEM STABILITY</title>
+    <title>BAT-OS | TERMINAL V5.5</title>
     <link rel="icon" href="data:;base64,iVBORw0KGgo=">
     <style>
         :root { --glow: #ff3c00; --bg: #000; }
@@ -31,13 +31,13 @@
     <div id="right-door" class="door"></div>
     <div id="scan-box">
         <div id="laser"></div>
-        <p style="margin-top:280px; font-weight: bold; letter-spacing: 5px;" id="auth-status">RE-CALIBRATING...</p>
+        <p style="margin-top:280px; font-weight: bold; letter-spacing: 5px;" id="auth-status">LINKING...</p>
     </div>
     <div id="tap-msg" style="z-index:1003; font-size: 18px; border: 1px solid var(--glow); padding: 10px 20px;">[ INITIATE BOOT ]</div>
 </div>
 
 <div id="hud">
-    <div style="position:absolute; top:20px; left:30px; font-size:12px;">SYSTEM: SECURE</div>
+    <div style="position:absolute; top:20px; left:30px; font-size:12px;">STATUS: ENCRYPTED</div>
 </div>
 
 <canvas id="screenContent" width="512" height="512"></canvas>
@@ -53,49 +53,48 @@
     const REDIRECT_URI = 'https://belisario-afk.github.io/Bat-OS/'; 
     const SCOPES = 'user-read-currently-playing user-modify-playback-state';
 
-    let spotifyToken = localStorage.getItem('spotify_token');
-    let currentTrack = "IDLE";
+    let spotifyToken = localStorage.getItem('bat_os_token');
+    let currentTrack = "SYSTEM IDLE";
     let currentArtist = "WAITING...";
-    let batteryLevel = "---";
+    let batteryLevel = "0%";
+    let dashReady = false;
 
-    // --- AUTH REPAIR ---
-    function forceLogin() {
-        localStorage.removeItem('spotify_token'); // Wipe old data
-        const authUrl = new URL('https://accounts.spotify.com/authorize');
-        authUrl.searchParams.append('response_type', 'token');
-        authUrl.searchParams.append('client_id', CLIENT_ID.trim());
-        authUrl.searchParams.append('scope', SCOPES);
-        authUrl.searchParams.append('redirect_uri', REDIRECT_URI);
-        authUrl.searchParams.append('show_dialog', 'true'); // Force user to see login screen
-        window.location.href = authUrl.toString();
-    }
-
+    // --- STEP 1: TOKEN CAPTURE (Runs immediately before anything else) ---
     function captureToken() {
-        const hash = window.location.hash.substring(1).split('&').reduce((initial, item) => {
-            if (item) { var parts = item.split('='); initial[parts[0]] = decodeURIComponent(parts[1]); }
-            return initial;
-        }, {});
+        const urlParams = new URLSearchParams(window.location.hash.substring(1));
+        const token = urlParams.get('access_token');
         
-        if (hash.access_token) {
-            localStorage.setItem('spotify_token', hash.access_token);
-            spotifyToken = hash.access_token;
+        if (token) {
+            localStorage.setItem('bat_os_token', token);
+            spotifyToken = token;
+            // Clear hash from URL to prevent loop
             window.history.replaceState(null, null, window.location.pathname);
             return true;
         }
         return false;
     }
 
-    // --- API TOOLS ---
-    async function spotifyCmd(endpoint, method = 'POST') {
-        if(!spotifyToken) return;
-        const res = await fetch(`https://api.spotify.com/v1/me/player/${endpoint}`, {
-            method: method,
-            headers: { 'Authorization': `Bearer ${spotifyToken}` }
-        });
-        if (res.status === 401) forceLogin(); // If token is bad, kick to login
+    // --- STEP 2: AUTH TRIGGER ---
+    function startAuth() {
+        localStorage.removeItem('bat_os_token'); // Purge old data
+        const authUrl = `https://accounts.spotify.com/authorize?client_id=${CLIENT_ID}&response_type=token&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&scope=${encodeURIComponent(SCOPES)}&show_dialog=true`;
+        window.location.href = authUrl;
     }
 
-    async function updateSpotifyUI() {
+    // --- STEP 3: API CALLS ---
+    async function spotifyAction(endpoint, method = 'POST') {
+        if(!spotifyToken) return;
+        try {
+            const res = await fetch(`https://api.spotify.com/v1/me/player/${endpoint}`, {
+                method: method,
+                headers: { 'Authorization': `Bearer ${spotifyToken}` }
+            });
+            if (res.status === 401) startAuth(); // Token invalid/expired
+            setTimeout(updateDisplay, 500);
+        } catch(e) {}
+    }
+
+    async function updateDisplay() {
         if (!spotifyToken) return;
         try {
             const res = await fetch('https://api.spotify.com/v1/me/player/currently-playing', {
@@ -103,42 +102,30 @@
             });
             if (res.status === 200) {
                 const data = await res.json();
-                currentTrack = (data.item.name || "UNKNOWN").toUpperCase();
-                currentArtist = (data.item.artists[0].name || "UNKNOWN").toUpperCase();
+                if (data.item) {
+                    currentTrack = data.item.name.toUpperCase();
+                    currentArtist = data.item.artists[0].name.toUpperCase();
+                }
             } else if (res.status === 401) {
-                forceLogin();
+                startAuth();
             }
         } catch(e) {}
     }
 
-    // --- INITIALIZATION ---
-    let dashReady = false;
+    // --- STEP 4: INITIALIZE DASHBOARD ---
     captureToken();
 
-    // Only skip intro if we actually have a token
     if (spotifyToken) {
         dashReady = true;
-        document.getElementById('intro').style.display = 'none';
-        document.getElementById('hud').style.opacity = 1;
-        setInterval(updateSpotifyUI, 3000);
-        updateSpotifyUI();
+        document.addEventListener('DOMContentLoaded', () => {
+            document.getElementById('intro').style.display = 'none';
+            document.getElementById('hud').style.opacity = 1;
+            setInterval(updateDisplay, 4000);
+            updateDisplay();
+        });
     }
 
-    document.getElementById('intro').onclick = () => {
-        if(dashReady) return;
-        document.getElementById('tap-msg').style.display = 'none';
-        document.getElementById('intro').classList.add('open');
-        document.getElementById('scan-box').style.display = 'block';
-        document.getElementById('scan-box').style.opacity = 1;
-        
-        // Final sequence before redirect
-        setTimeout(() => {
-            document.getElementById('auth-status').innerText = "SYSTEM OVERRIDE...";
-            setTimeout(forceLogin, 1200);
-        }, 2000);
-    };
-
-    // --- VISUALS ---
+    // --- DASHBOARD UI & VISUALS ---
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(50, window.innerWidth/window.innerHeight, 0.1, 1000);
     const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -171,19 +158,30 @@
     scene.add(new THREE.PointLight(0xff3c00, 25, 20));
     camera.position.z = 10;
 
+    // Interaction
     window.addEventListener('pointerdown', (e) => {
-        if(!dashReady) return;
+        if (!dashReady) {
+            // Handle Intro Click
+            document.getElementById('tap-msg').style.display = 'none';
+            document.getElementById('intro').classList.add('open');
+            document.getElementById('scan-box').style.display = 'block';
+            document.getElementById('scan-box').style.opacity = 1;
+            setTimeout(startAuth, 3500);
+            return;
+        }
+        
         const mouse = new THREE.Vector2((e.clientX / window.innerWidth) * 2 - 1, -(e.clientY / window.innerHeight) * 2 + 1);
         const raycaster = new THREE.Raycaster();
         raycaster.setFromCamera(mouse, camera);
         const hit = raycaster.intersectObjects(buttons);
         if(hit.length > 0) {
             const b = hit[0].object; b.position.z = 0.1;
-            spotifyCmd(b.userData.cmd, b.userData.cmd === 'pause' ? 'PUT' : 'POST');
+            spotifyAction(b.userData.cmd, b.userData.cmd === 'pause' ? 'PUT' : 'POST');
             setTimeout(() => b.position.z = 0.3, 150);
         }
     });
 
+    // Battery
     if (navigator.getBattery) { navigator.getBattery().then(batt => { 
         batteryLevel = Math.floor(batt.level * 100) + "%";
         batt.onlevelchange = () => batteryLevel = Math.floor(batt.level * 100) + "%";
@@ -196,7 +194,7 @@
         ctx.font = 'bold 28px Courier'; ctx.fillText("WAYNETECH TACTICAL AUDIO", 60, 80);
         ctx.font = '20px Courier'; ctx.fillText("PWR: " + batteryLevel, 360, 120);
         ctx.strokeRect(360, 130, 100, 15); ctx.fillRect(360, 130, parseInt(batteryLevel) || 0, 15);
-        ctx.font = 'bold 34px Courier'; ctx.fillText(currentTrack.substring(0, 18), 60, 240);
+        ctx.font = 'bold 32px Courier'; ctx.fillText(currentTrack.substring(0, 20), 60, 240);
         ctx.font = '24px Courier'; ctx.fillText(currentArtist.substring(0, 22), 60, 290);
         for(let i=0; i<25; i++) { let h = Math.random() * 80; ctx.fillRect(60 + (i*15), 450 - h, 10, h); }
         screenTexture.needsUpdate = true;
