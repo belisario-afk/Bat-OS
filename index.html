@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>BAT-OS V4 | SPOTIFY INTEGRATION</title>
+    <style>
+        :root { --glow: #ff3c00; --bg: #000; }
+        body { margin: 0; overflow: hidden; background: var(--bg); font-family: 'Courier New', monospace; color: var(--glow); user-select: none; }
+        
+        /* Intro/Auth Layer */
+        #intro { position: fixed; inset: 0; z-index: 1000; cursor: pointer; display: flex; justify-content: center; align-items: center; }
+        .door { position: absolute; top: 0; height: 100%; width: 50.5%; background: #050505; border: 1px solid #111; transition: transform 2s cubic-bezier(0.8, 0, 0.2, 1); z-index: 1001; }
+        #left-door { left: 0; } #right-door { right: 0; }
+        .open #left-door { transform: translateX(-100%); }
+        .open #right-door { transform: translateX(100%); }
+
+        #scan-box { display: none; position: relative; z-index: 1002; text-align: center; }
+        #laser { width: 250px; height: 3px; background: var(--glow); box-shadow: 0 0 20px var(--glow); position: absolute; animation: moveLaser 1.5s ease-in-out infinite; }
+        @keyframes moveLaser { 0%, 100% { top: 0; } 50% { top: 250px; } }
+
+        #hud { position: absolute; inset: 0; pointer-events: none; z-index: 10; opacity: 0; transition: opacity 1.5s; }
+        canvas { display: block; }
+        #screenContent { display: none; }
+    </style>
+</head>
+<body>
+
+<div id="intro">
+    <div id="left-door" class="door"></div>
+    <div id="right-door" class="door"></div>
+    <div id="scan-box">
+        <div id="laser"></div>
+        <p style="margin-top:280px; font-weight: bold; letter-spacing: 5px;" id="auth-status">BIOMETRIC SCAN...</p>
+    </div>
+    <div id="tap-msg" style="z-index:1003; font-size: 18px; border: 1px solid var(--glow); padding: 10px 20px;">ACCESS WAYNETECH</div>
+</div>
+
+<div id="hud">
+    <div style="position:absolute; top:20px; left:30px; font-size:12px;">SPOTIFY LINK: CONNECTED</div>
+</div>
+
+<canvas id="screenContent" width="512" height="512"></canvas>
+
+<script type="importmap">
+  { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+</script>
+
+<script type="module">
+    import * as THREE from 'three';
+
+    // --- SPOTIFY CONFIG (REPLACE WITH YOUR CLIENT ID) ---
+    const CLIENT_ID = 'YOUR_SPOTIFY_CLIENT_ID_HERE';
+    const REDIRECT_URI = window.location.href.split('#')[0]; // Auto-detects current URL
+    const SCOPES = 'user-read-currently-playing user-modify-playback-state';
+
+    let spotifyToken = null;
+    let currentTrack = "SYSTEM IDLE";
+    let currentArtist = "WAITING FOR INPUT";
+
+    // --- Spotify Auth Logic ---
+    function loginToSpotify() {
+        const url = `https://accounts.spotify.com/authorize?client_id=${CLIENT_ID}&response_type=token&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&scope=${encodeURIComponent(SCOPES)}`;
+        window.location.href = url;
+    }
+
+    function checkAuth() {
+        const hash = window.location.hash.substring(1).split('&').reduce((initial, item) => {
+            if (item) { var parts = item.split('='); initial[parts[0]] = decodeURIComponent(parts[1]); }
+            return initial;
+        }, {});
+        window.location.hash = "";
+        return hash.access_token;
+    }
+
+    async function updateSpotifyInfo() {
+        if (!spotifyToken) return;
+        try {
+            const res = await fetch('https://api.spotify.com/v1/me/player/currently-playing', {
+                headers: { 'Authorization': `Bearer ${spotifyToken}` }
+            });
+            if (res.status === 200) {
+                const data = await res.json();
+                currentTrack = data.item.name.toUpperCase();
+                currentArtist = data.item.artists[0].name.toUpperCase();
+            }
+        } catch (e) { console.error("Spotify Fetch Error", e); }
+    }
+
+    // --- Sequence Logic ---
+    const intro = document.getElementById('intro');
+    const authStatus = document.getElementById('auth-status');
+    let dashReady = false;
+
+    // Auto-load if we have a token
+    const token = checkAuth();
+    if (token) {
+        spotifyToken = token;
+        dashReady = true;
+        intro.style.display = 'none';
+        document.getElementById('hud').style.opacity = 1;
+        setInterval(updateSpotifyInfo, 5000); // Update every 5 seconds
+    }
+
+    intro.onclick = () => {
+        document.getElementById('tap-msg').style.display = 'none';
+        intro.classList.add('open');
+        document.getElementById('scan-box').style.display = 'block';
+        document.getElementById('scan-box').style.opacity = 1;
+        
+        setTimeout(() => {
+            authStatus.innerText = "AUTHENTICATING SPOTIFY...";
+            setTimeout(() => { loginToSpotify(); }, 1500);
+        }, 3000);
+    };
+
+    // --- Three.js Setup (Visuals) ---
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(50, window.innerWidth/window.innerHeight, 0.1, 1000);
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.body.appendChild(renderer.domElement);
+
+    const dashGroup = new THREE.Group();
+    scene.add(dashGroup);
+
+    // Center Screen with Spotify Canvas
+    const screenCanvas = document.getElementById('screenContent');
+    const ctx = screenCanvas.getContext('2d');
+    const screenTexture = new THREE.CanvasTexture(screenCanvas);
+    const monitor = new THREE.Mesh(
+        new THREE.PlaneGeometry(6, 4),
+        new THREE.MeshStandardMaterial({ map: screenTexture, emissive: 0xff3c00, emissiveIntensity: 0.2 })
+    );
+    monitor.position.z = 0.26;
+    dashGroup.add(monitor);
+
+    // Lights
+    const pLight = new THREE.PointLight(0xff3c00, 20, 20);
+    pLight.position.set(0, 0, 5);
+    scene.add(pLight);
+
+    camera.position.z = 10;
+
+    function drawScreen() {
+        ctx.fillStyle = 'black'; ctx.fillRect(0, 0, 512, 512);
+        ctx.strokeStyle = '#ff3c00'; ctx.lineWidth = 4; ctx.strokeRect(10, 10, 492, 492);
+        
+        ctx.fillStyle = '#ff3c00';
+        ctx.font = 'bold 30px Courier New';
+        ctx.fillText("WAYNETECH AUDIO LINK", 50, 60);
+        
+        ctx.font = '24px Courier New';
+        ctx.fillText("NOW PLAYING:", 50, 150);
+        
+        ctx.font = 'bold 40px Courier New';
+        // Simple text wrap for track name
+        ctx.fillText(currentTrack.substring(0, 15), 50, 210);
+        
+        ctx.font = '24px Courier New';
+        ctx.fillText("ARTIST: " + currentArtist.substring(0, 20), 50, 270);
+        
+        // Animated waveform (Fake)
+        for(let i=0; i<20; i++) {
+            let h = Math.random() * 50;
+            ctx.fillRect(50 + (i*20), 400 - h, 10, h);
+        }
+
+        screenTexture.needsUpdate = true;
+    }
+
+    function animate() {
+        requestAnimationFrame(animate);
+        if(dashReady) {
+            drawScreen();
+            dashGroup.rotation.y = Math.sin(Date.now() * 0.001) * 0.05;
+        }
+        renderer.render(scene, camera);
+    }
+    animate();
+</script>
+</body>
+</html>
